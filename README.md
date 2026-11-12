@@ -8,7 +8,9 @@ and ends with a complete application running on a local multi-node cluster:
 - a **Go** catalog API and a **Python** orders API
 - a background **worker**
 - **Postgres** and **Redis**
-- an **API gateway** (Kubernetes Gateway API + Envoy Gateway)
+- two **stacked gateways**: an edge gateway (Kubernetes Gateway API + Envoy Gateway) and our own
+  **C#/YARP API gateway** with custom authentication
+- **Keycloak** as the identity provider (OpenID Connect login, BFF sessions)
 - plus storage, autoscaling, security, monitoring and packaging (Kustomize/Helm)
 
 ## Start here

@@ -39,7 +39,7 @@ explained, what questions the learner asked, and what comes next.
 - **Docker Desktop** (Docker Engine 29.x) with WSL integration.
 - Tools already installed: `docker`, `kind` (v0.33), `kubectl` (v1.37), `helm` (v4), `git`.
 - ~15 GB RAM, 8 CPUs.
-- **No local Go/Python/Node toolchain is required**: every app is built inside Docker
+- **No local Go/Python/Node/.NET toolchain is required**: every app is built inside Docker
   (multi-stage Dockerfiles). Don't introduce steps that require installing language runtimes.
 - ⚠️ Docker Desktop runs containers inside its own VM: container IPs (and therefore kind node IPs)
   are **not directly reachable** from WSL. Expose things via kind `extraPortMappings` or
@@ -52,34 +52,50 @@ explained, what questions the learner asked, and what comes next.
 
 | Component | Tech | Role | K8s concepts it teaches |
 |-----------|------|------|-------------------------|
-| `frontend` | Next.js (React), standalone Node server | Web UI | Deployments, Services, routing, build-time vs run-time config |
-| `catalog-api` | Go (net/http) | Lists/serves books from Postgres, caches in Redis | Config, Secrets, probes, resources, HPA |
-| `orders-api` | Python (FastAPI) | Creates orders, enqueues jobs in Redis | Service-to-service traffic, DNS, NetworkPolicies |
+| Edge gateway | **Gateway API + Envoy Gateway** (YAML only) | Cluster entry: TLS termination, HTTP→HTTPS, host/path routing, per-IP rate limiting | North–south traffic, CRDs, controllers, Helm |
+| `api-gateway` | **C# / .NET + YARP** | Application API gateway / BFF: OIDC login/logout/callback, server-side sessions in Redis, Bearer JWT validation, revoked-user check, per-route policies, strip + inject `X-User-*` headers, routes `/api/*` | Code-based gateway, Secrets, shared state across replicas (sessions + ASP.NET Data Protection keys in Redis) |
+| `keycloak` | Keycloak (official image) | Identity provider: users, roles, login pages, tokens (realm `bookstore` imported from JSON) | Heavy 3rd-party app: probes, resources, ConfigMap-imported config, DB dependency, internal vs external hostname |
+| `frontend` | Next.js (React), standalone Node server | Web UI; calls `/api/*` and `/auth/*` same-origin (cookies, no tokens in the browser) | Deployments, Services, build-time vs run-time config |
+| `catalog-api` | Go (net/http) | Books (public GET; admin-only POST); Postgres + Redis cache | Config, Secrets, probes, resources, HPA |
+| `orders-api` | Python (FastAPI) | Orders for the user in `X-User-Id`; enqueues jobs in Redis | Service-to-service traffic, DNS, header trust → NetworkPolicies |
 | `worker` | Python | Consumes order jobs, updates order status | Background workloads, scaling, graceful shutdown |
-| `db-migrate` | Python (or SQL + psql) | Creates schema + seed data | Jobs, init containers, ordering |
-| `loadgen` | Go or Python | Generates traffic | Autoscaling, observing behaviour under load |
-| `postgres` | Official image | Relational DB | StatefulSets, PV/PVC, StorageClass, headless Services |
-| `redis` | Official image | Cache + queue | Stateful-but-disposable services |
-| API gateway | **Gateway API + Envoy Gateway** | Single entry point: routing, TLS, rate limiting, CORS, JWT | North–south traffic, CRDs, controllers |
+| `db-migrate` | Python | Creates schema + seed data | Jobs, init containers, ordering |
+| `loadgen` | Go | Generates traffic (uses a Bearer token from Keycloak's CLI client) | Autoscaling, behaviour under load |
+| `postgres` | Official image | Databases `bookstore` and `keycloak` | StatefulSets, PV/PVC, StorageClass, headless Services |
+| `redis` | Official image | Cache, job queue, gateway sessions, revoked-user list | Shared state for stateless replicas |
 
 Traffic shape (final):
 
 ```
-browser ──► Envoy Gateway ─┬─ /            ─► frontend
-                           ├─ /api/catalog ─► catalog-api ─► redis, postgres
-                           └─ /api/orders  ─► orders-api  ─► postgres, redis(queue) ◄─ worker
+browser ─► Envoy Gateway (edge, HTTPS) ─┬─ bookstore.localhost  /          ─► frontend
+                                        ├─ bookstore.localhost  /api/*     ─► api-gateway ─┬─ /api/catalog ─► catalog-api ─► postgres, redis
+                                        │                       /auth/*    ─► api-gateway  └─ /api/orders  ─► orders-api  ─► postgres, redis ◄─ worker
+                                        └─ auth.bookstore.localhost        ─► keycloak ─► postgres
+api-gateway ─► keycloak (code exchange, JWKS, refresh — in-cluster URL), redis (sessions, revoked list)
 ```
 
-The **frontend calls the APIs from the browser through the gateway** (same origin, relative
-`/api/...` paths). This keeps the gateway meaningful and avoids hard-coding service URLs.
+Design rules (do not change without the learner's agreement):
+- **Two gateways, stacked** (agreed with the learner). Envoy Gateway = infrastructure edge, YAML only.
+  YARP `api-gateway` = application gateway with all custom auth logic.
+- **Keycloak + custom logic inside `api-gateway`**; there is **no** separate `auth-api`.
+- **BFF pattern:** tokens never reach the browser; browser holds an HttpOnly session cookie.
+- Downstream APIs contain **no auth code**: they trust `X-User-Id`, `X-User-Name`, `X-User-Roles`.
+  `api-gateway` always strips client-supplied `X-User-*`. NetworkPolicies (Step 15) enforce that
+  only `api-gateway` can reach the APIs.
+- Route policies: `GET /api/catalog/*` public · `POST /api/catalog/books` admin ·
+  `/api/orders/*` authenticated · `POST /api/admin/revoke/{user}` admin.
+- Keycloak issuer/hostname: public `https://auth.bookstore.localhost`, in-cluster backchannel
+  `http://keycloak:8080` (explained in Step 12).
+- The learner asked that gateway and auth concepts be **explained in full detail** — the conceptual
+  foundation is `docs/00-overview.md` §3.7–§3.8; Steps 11 and 12 go deeper, never shallower.
 
 ## 5. Tutorial structure (the step plan)
 
 | # | Doc | Topic |
 |---|-----|-------|
-| 00 | `docs/00-overview.md` | Overview, mental model, tools, prerequisites |
-| 01 | `docs/01-the-application-and-containers.md` | Build all apps; Dockerfiles; Docker Compose; what containers really are (namespaces, cgroups, images, layers) |
-| 02 | `docs/02-networking-from-zero.md` | IP, subnets, ports, TCP/UDP, DNS, routing, NAT; build container networking by hand (netns, veth, bridge, iptables) |
+| 00 | `docs/00-overview.md` | Overview, mental model, reverse proxies & API gateways, authentication design, tools, prerequisites |
+| 01 | `docs/01-the-application-and-containers.md` | Build all apps (incl. YARP gateway + Keycloak realm); Dockerfiles; Docker Compose; what containers really are (namespaces, cgroups, images, layers) |
+| 02 | `docs/02-networking-from-zero.md` | IP, subnets, ports, TCP/UDP, DNS, routing, NAT; HTTP, cookies & TLS basics; build container networking by hand (netns, veth, bridge, iptables) |
 | 03 | `docs/03-kubernetes-architecture-and-first-cluster.md` | Why orchestration; control plane & node components; reconciliation; create kind cluster; kubectl |
 | 04 | `docs/04-pods-and-manifests.md` | Pods, YAML anatomy, apiVersion/kind/metadata/spec/status, lifecycle, logs, exec, multi-container |
 | 05 | `docs/05-labels-replicasets-deployments.md` | Labels/selectors, ReplicaSets, Deployments, scaling, rolling updates, rollbacks |
@@ -88,13 +104,14 @@ The **frontend calls the APIs from the browser through the gateway** (same origi
 | 08 | `docs/08-namespaces-configmaps-secrets.md` | Namespaces, ConfigMaps, Secrets, env vs mounted files |
 | 09 | `docs/09-storage-and-statefulsets.md` | Volumes, PV/PVC, StorageClass, StatefulSets → Postgres & Redis; db-migrate Job |
 | 10 | `docs/10-health-resources-scheduling.md` | Probes, requests/limits, QoS, affinity, taints/tolerations, PDBs |
-| 11 | `docs/11-api-gateway.md` | Ingress vs Gateway API, Envoy Gateway, HTTPRoutes, TLS, rate limiting, CORS, JWT |
-| 12 | `docs/12-jobs-cronjobs-and-workers.md` | Jobs, CronJobs, worker Deployment, graceful shutdown |
-| 13 | `docs/13-autoscaling.md` | metrics-server, HPA, load testing with loadgen |
-| 14 | `docs/14-security.md` | ServiceAccounts, RBAC, NetworkPolicies, securityContext, Pod Security Standards |
-| 15 | `docs/15-observability-and-troubleshooting.md` | Logs, events, Prometheus/Grafana, debugging playbook |
-| 16 | `docs/16-packaging-kustomize-helm.md` | Kustomize base/overlays, Helm chart for the app |
-| 17 | `docs/17-capstone.md` | Full system end to end, failure drills, what's next (GitOps, mesh, cloud) |
+| 11 | `docs/11-edge-gateway.md` | Ingress vs Gateway API, CRDs, Envoy Gateway via Helm, Gateway/HTTPRoute, hostnames, TLS, HTTP→HTTPS, rate limiting |
+| 12 | `docs/12-identity-and-api-gateway.md` | Keycloak on K8s, OAuth2/OIDC flows in detail, JWT/JWKS, BFF sessions, YARP gateway custom auth, replicas sharing sessions/keys, issuer hostname problem |
+| 13 | `docs/13-jobs-cronjobs-and-workers.md` | Jobs, CronJobs, worker Deployment, graceful shutdown |
+| 14 | `docs/14-autoscaling.md` | metrics-server, HPA, load testing with loadgen |
+| 15 | `docs/15-security.md` | ServiceAccounts, RBAC, NetworkPolicies (incl. header-spoofing attack → fix), securityContext, Pod Security Standards |
+| 16 | `docs/16-observability-and-troubleshooting.md` | Logs, events, Prometheus/Grafana, debugging playbook |
+| 17 | `docs/17-packaging-kustomize-helm.md` | Kustomize base/overlays, Helm chart for the app |
+| 18 | `docs/18-capstone.md` | Full system end to end, failure drills, what's next (GitOps, mesh, cloud) |
 
 The plan may be refined (split/merge) if the learner asks; record any change in
 `TUTORIAL-INDEX.md` **and** in this table.
@@ -176,8 +193,10 @@ Conventions:
   `app.kubernetes.io/component`.
 - Scripts are bash, `set -euo pipefail`, idempotent, and print what they do.
 - Pin versions (images, Helm charts) and record them in the step doc.
-- Host ports: avoid `8080` (used by `kube-shop`). Planned gateway host ports: `80`/`443`
+- Host ports: avoid `8080` (used by `kube-shop`). Planned edge-gateway host ports: `80`/`443`
   (fallback `9080`/`9443` if busy) — final choice made and documented in Step 03.
+- Hostnames: `bookstore.localhost` (app) and `auth.bookstore.localhost` (Keycloak). `*.localhost`
+  resolves to 127.0.0.1 in browsers and curl — no `/etc/hosts` edits.
 
 ## 9. Git
 
