@@ -55,7 +55,9 @@ Legend: ✅ done · 🔄 in progress · ⏭️ next · ⬜ todo
   networking quirk; the per-step document layout.
 - **Files:** `AGENTS.md`, `CLAUDE.md` (symlink), `TUTORIAL-INDEX.md`, `README.md`, `.gitignore`,
   `docs/00-overview.md`, `scripts/check-prereqs.sh`.
-- **Q&A:** —
+- **Q&A:** Does Kubernetes have its own API gateway or do we need an external one (YARP)? → Gateway API
+  is a standard with many implementations (Envoy Gateway); YARP is a code-based gateway that runs as
+  a normal app; cloud API management is truly external. See docs/00-overview.md §10.
 - **Notes for next step:** Step 01 creates **all** application code under `apps/` + `compose.yaml`,
   and teaches containers from zero (process isolation, namespaces, cgroups, images & layers,
   Dockerfiles, multi-stage builds, Compose networking).

@@ -625,4 +625,92 @@ inside.
 
 ## 10. Q&A
 
-*(Your questions about this step will be collected here.)*
+### Q: Does Kubernetes have its own API gateway, or do we need an external one (like YARP in C#)?
+
+**Short answer:** Kubernetes provides the **standard for describing** an API gateway (the
+**Gateway API**), but **not the program that does the work**. You install one of many
+implementations. YARP is a different kind of thing: a library for **writing your own** gateway as a
+normal application.
+
+**1. Kubernetes defines interfaces, and other projects implement them.** This pattern comes up again
+and again:
+
+| Kubernetes defines… | …and you pick an implementation |
+|---|---|
+| How containers are run (CRI) | containerd, CRI-O |
+| How pods get a network (CNI) | kindnet, Calico, Cilium (Step 06) |
+| How storage is attached (CSI) | local-path, AWS EBS, Azure Disk (Step 09) |
+| **How traffic enters the cluster (Gateway API)** | **Envoy Gateway, NGINX Gateway Fabric, Istio, Cilium, Kong, Traefik, …** |
+
+The Gateway API is a set of object types (`GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, …).
+You write them in YAML like everything else:
+
+```yaml
+# "Requests whose path starts with /api/catalog go to the catalog-api Service"
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: catalog
+spec:
+  parentRefs: [{ name: bookstore-gateway }]
+  rules:
+    - matches: [{ path: { type: PathPrefix, value: /api/catalog } }]
+      backendRefs: [{ name: catalog-api, port: 80 }]
+```
+
+On its own, Kubernetes **stores** this object and does nothing else with it. Something has to read
+it and do the work. That's a **controller**, the same pattern as in §3.3. With **Envoy Gateway**
+(our choice):
+
+```mermaid
+flowchart LR
+    Y["HTTPRoute / Gateway<br/>(your YAML)"] --> API["Kubernetes API"]
+    API -- "watches" --> C["Envoy Gateway<br/>(controller)"]
+    C -- "generates config" --> E["Envoy proxy pods<br/>(the actual gateway)"]
+    Client["Browser"] --> E --> S["catalog-api pods"]
+```
+
+- **Envoy** is a high-performance proxy (written in C++), widely used in production.
+- **Envoy Gateway** is the controller that turns your Gateway API objects into Envoy configuration.
+- Swapping in NGINX Gateway Fabric or Istio needs **no changes to your HTTPRoutes**. That
+  portability is the whole point of having a standard.
+
+The older, simpler version of this standard is called **Ingress**. You'll still find it everywhere,
+and we'll compare the two in Step 11.
+
+**2. YARP is a "build your own gateway" library.** YARP (Yet Another Reverse Proxy) is a .NET
+library. You write a C# application, configure routes in code or in `appsettings.json`, build an
+image, and deploy it **like any other app** (a Deployment plus a Service). Spring Cloud Gateway
+(Java) and Ocelot (.NET) are similar.
+
+Two things to note:
+- It doesn't run "outside" Kubernetes. It's **one more pod inside the cluster**.
+- It still has to **receive traffic from outside**, so it usually sits *behind* a Gateway API /
+  Ingress implementation or a `LoadBalancer` Service.
+
+**3. Truly external gateways also exist.** Cloud services such as Azure API Management, AWS API
+Gateway or Kong Konnect run **outside** the cluster, in front of the cluster's load balancer.
+Companies use them for API products: developer portals, API keys, billing, analytics.
+
+**How the three are combined in practice:**
+
+```mermaid
+flowchart LR
+    I["Internet"] --> X["(optional) Cloud API management<br/>outside the cluster"]
+    X --> G["Gateway API implementation<br/>(Envoy Gateway) — cluster edge"]
+    G --> B["(optional) Code-based gateway / BFF<br/>(YARP, Spring Cloud Gateway)"]
+    G --> S1["services"]
+    B --> S2["services"]
+```
+
+| | Gateway API + Envoy Gateway | YARP (code-based) | Cloud API management |
+|---|---|---|---|
+| Where it runs | In the cluster (controller + proxy pods) | In the cluster (your app's pods) | Outside, run by the cloud provider |
+| How you configure it | Kubernetes YAML (`HTTPRoute`, policies) | C# code / JSON | Cloud portal / IaC |
+| Strengths | Kubernetes-native, standard, portable, each team owns its routes | Unlimited custom logic: aggregation, custom auth, request transforms | Developer portal, API keys, monetisation |
+| Weaknesses | Custom logic is limited to what the implementation supports | You write and maintain the code, and still need an entry point in front | Cost, vendor lock-in, extra network hop |
+| Typical use | Default entry point of a cluster | Backend-for-frontend (BFF) or special logic | Public APIs sold or shared with partners |
+
+**Why this tutorial uses Envoy Gateway:** it's the Kubernetes-native way and the part every
+cluster needs. It also covers our needs (routing, TLS, rate limiting, CORS, JWT) without custom
+code. A YARP layer could be added behind it as an optional exercise.
