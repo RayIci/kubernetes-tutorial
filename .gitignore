@@ -1,0 +1,26 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Go
+/apps/*/bin/
+
+# Local secrets & generated material
+*.env
+!*.example.env
+*.pem
+*.key
+kubeconfig*
