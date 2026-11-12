@@ -684,6 +684,7 @@ image, and deploy it **like any other app** (a Deployment plus a Service). Sprin
 (Java) and Ocelot (.NET) are similar.
 
 Two things to note:
+
 - It doesn't run "outside" Kubernetes. It's **one more pod inside the cluster**.
 - It still has to **receive traffic from outside**, so it usually sits *behind* a Gateway API /
   Ingress implementation or a `LoadBalancer` Service.
